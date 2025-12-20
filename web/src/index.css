@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #cccccc;
+  background-color: #1e1e1e;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4f4f4f;
+}
+
+/* Method badge colors */
+.method-get { color: #4ec9b0; }
+.method-post { color: #569cd6; }
+.method-put { color: #dcdcaa; }
+.method-patch { color: #ce9178; }
+.method-delete { color: #f14c4c; }
+.method-head { color: #9cdcfe; }
+.method-options { color: #c586c0; }
+
+/* Status code colors */
+.status-2xx { color: #4ec9b0; }
+.status-3xx { color: #dcdcaa; }
+.status-4xx { color: #ce9178; }
+.status-5xx { color: #f14c4c; }
+
+/* Code block styling */
+pre {
+  background: #252526;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+code {
+  font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}

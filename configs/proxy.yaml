@@ -1,0 +1,42 @@
+proxy:
+  listen: ":8080"
+  timeout: 30
+  skip_hosts:
+    - "*.sentinelone.net"
+    - "*.sentry.io"
+    - "*.crashlytics.com"
+
+api:
+  listen: ":9090"
+  cors_origins:
+    - "http://localhost:3000"
+
+tls:
+  ca_cert: "./configs/ca/ca.crt"
+  ca_key: "./configs/ca/ca.key"
+  cert_cache_dir: "./configs/ca/cache"
+
+storage:
+  path: "./data/proxy.db"
+  max_captures: 100000
+
+inference:
+  enabled: true
+  min_samples: 3
+  max_enum_values: 10
+  enum_threshold: 50
+  infer_on_capture: false
+
+llm:
+  provider: "anthropic"
+  # API key is read from ANTHROPIC_API_KEY environment variable
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 32768
+  temperature: 0.1
+
+mcp:
+  db_path: "./data/proxy.db"
+
+logging:
+  level: "info"
+  format: "json"
