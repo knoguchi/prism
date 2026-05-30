@@ -6,6 +6,8 @@ Prism is a MITM proxy that captures HTTP/HTTPS traffic and uses AI to infer path
 
 Once inferred, Prism generates typed client code in multiple languages and validates live traffic against the spec in real time.
 
+![Prism Traffic View](docs/screenshots/traffic.png)
+
 ## How It Works
 
 1. **Capture** — Prism sits between your client and any API, intercepting HTTP/HTTPS traffic transparently
