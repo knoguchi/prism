@@ -58,7 +58,7 @@ A Go-based SSL/TLS MITM proxy with AI-powered API schema inference. Inspired by 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/prism.git
+git clone https://github.com/knoguchi/prism.git
 cd prism
 
 # Install dependencies
@@ -219,6 +219,7 @@ prism/
 - `GET /api/captures` - List captures (with filters: host, method, status, path, content_type, page, limit)
 - `GET /api/captures/:id` - Get capture details (request + response)
 - `DELETE /api/captures/:id` - Delete capture
+- `DELETE /api/captures` - Clear all captures (optional `?host=` filter)
 
 ### Search
 
@@ -304,7 +305,7 @@ make lint
 - `mark3labs/mcp-go` - MCP server
 
 ### Frontend
-- React 18 + TypeScript
+- React 19 + TypeScript
 - Vite
 - TailwindCSS
 - TanStack Query
