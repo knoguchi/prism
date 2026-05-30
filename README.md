@@ -1,17 +1,28 @@
 # Prism
 
-A Go-based SSL/TLS MITM proxy with AI-powered API schema inference. Inspired by Charles Proxy, with modern features for API development and testing.
+**Point Prism at any API and it figures out the schema for you.**
+
+Prism is a MITM proxy that captures HTTP/HTTPS traffic and uses AI to infer path patterns and full OpenAPI specifications from observed requests and responses. It watches traffic like `/users/123`, `/users/456`, and `/users/789/posts` and recognizes that these are `GET /users/{id}` and `GET /users/{id}/posts` — detecting path parameters, response schemas, enum values, and type constraints automatically.
+
+Once inferred, Prism generates typed client code in multiple languages and validates live traffic against the spec in real time.
+
+## How It Works
+
+1. **Capture** — Prism sits between your client and any API, intercepting HTTP/HTTPS traffic transparently
+2. **Learn** — As traffic flows, Prism tracks URL patterns, detects path parameters (UUIDs, numeric IDs, slugs), and builds a model of each endpoint's request/response shape
+3. **Infer** — AI analyzes the accumulated patterns and response bodies to produce a complete OpenAPI 3.0 specification with proper schemas, types, and descriptions
+4. **Generate** — From the OpenAPI spec, Prism deterministically generates typed code: TypeScript interfaces, Go structs, Protobuf definitions, JSON Schema, Avro, and GraphQL SDL
+5. **Validate** — Live traffic is validated against the inferred spec in real time, with AI-powered fixes when the schema drifts
 
 ## Features
 
-- **HTTP/HTTPS Interception** - Full MITM proxy with dynamic certificate generation
-- **WebSocket Capture** - Bidirectional message capture and inspection
-- **AI-Powered Schema Inference** - Automatically generate OpenAPI specs from captured traffic
-- **Multi-Format Code Generation** - Generate TypeScript, Go, Protobuf, and JSON Schema from inferred APIs
-- **Live Validation** - Real-time request/response validation against OpenAPI specs
-- **AI Schema Fix** - Automatically fix schema validation errors using AI
-- **MCP Integration** - Use captured traffic with Claude via Model Context Protocol
-- **Modern Web UI** - React-based interface for traffic inspection and analysis
+- **AI Path Pattern Inference** — Automatically discovers API structure from raw traffic: path parameters, response schemas, enum values, type constraints (int32 vs int64, UUID vs string), and endpoint groupings
+- **Multi-Format Code Generation** — From a single inferred spec, generates TypeScript, Go, Protobuf, JSON Schema, Avro, GraphQL, and SQL
+- **Live Validation** — Real-time request/response validation against inferred schemas via SSE, with AI-powered schema fixes
+- **HTTP/HTTPS Interception** — Full MITM proxy with dynamic CA certificate generation
+- **WebSocket Capture** — Bidirectional message capture and inspection
+- **MCP Integration** — Expose captured traffic and inferred schemas to Claude via Model Context Protocol
+- **Modern Web UI** — Traffic inspection, schema browsing, and live validation dashboard
 
 ## Architecture
 
