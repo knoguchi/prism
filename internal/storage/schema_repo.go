@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // SaveSchema stores or updates an inferred schema
@@ -346,4 +346,166 @@ func splitString(s string, sep rune) []string {
 		result = append(result, string(current))
 	}
 	return result
+}
+
+// SchemaVersion represents a versioned schema
+type SchemaVersion struct {
+	ID                    int64     `json:"id"`
+	Host                  string    `json:"host"`
+	Format                string    `json:"format"`
+	Version               int       `json:"version"`
+	Content               string    `json:"content"`
+	ChangeReason          string    `json:"change_reason,omitempty"`
+	ValidationErrorsFixed string    `json:"validation_errors_fixed,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	IsActive              bool      `json:"is_active"`
+}
+
+// GetLatestSchemaVersion gets the latest version number for a host/format
+func (db *DB) GetLatestSchemaVersion(ctx context.Context, host, format string) (int, error) {
+	var version int
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM schema_versions WHERE host = ? AND format = ?`,
+		host, format).Scan(&version)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get latest version: %w", err)
+	}
+	return version, nil
+}
+
+// SaveSchemaVersion saves a new schema version
+func (db *DB) SaveSchemaVersion(ctx context.Context, host, format, content, changeReason, errorsFixed string, makeActive bool) (*SchemaVersion, error) {
+	// Get next version number
+	latestVersion, err := db.GetLatestSchemaVersion(ctx, host, format)
+	if err != nil {
+		return nil, err
+	}
+	newVersion := latestVersion + 1
+
+	// If making active, deactivate current active version
+	if makeActive {
+		_, err = db.conn.ExecContext(ctx,
+			`UPDATE schema_versions SET is_active = 0 WHERE host = ? AND format = ? AND is_active = 1`,
+			host, format)
+		if err != nil {
+			return nil, fmt.Errorf("failed to deactivate current version: %w", err)
+		}
+	}
+
+	// Insert new version
+	result, err := db.conn.ExecContext(ctx,
+		`INSERT INTO schema_versions (host, format, version, content, change_reason, validation_errors_fixed, is_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		host, format, newVersion, content, changeReason, errorsFixed, makeActive)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save schema version: %w", err)
+	}
+
+	id, _ := result.LastInsertId()
+	return &SchemaVersion{
+		ID:                    id,
+		Host:                  host,
+		Format:                format,
+		Version:               newVersion,
+		Content:               content,
+		ChangeReason:          changeReason,
+		ValidationErrorsFixed: errorsFixed,
+		IsActive:              makeActive,
+		CreatedAt:             time.Now(),
+	}, nil
+}
+
+// GetActiveSchemaVersion gets the currently active schema version
+func (db *DB) GetActiveSchemaVersion(ctx context.Context, host, format string) (*SchemaVersion, error) {
+	var sv SchemaVersion
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT id, host, format, version, content, change_reason, validation_errors_fixed, created_at, is_active
+		FROM schema_versions WHERE host = ? AND format = ? AND is_active = 1`,
+		host, format).Scan(&sv.ID, &sv.Host, &sv.Format, &sv.Version, &sv.Content,
+		&sv.ChangeReason, &sv.ValidationErrorsFixed, &sv.CreatedAt, &sv.IsActive)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active version: %w", err)
+	}
+	return &sv, nil
+}
+
+// GetSchemaVersion gets a specific schema version
+func (db *DB) GetSchemaVersion(ctx context.Context, host, format string, version int) (*SchemaVersion, error) {
+	var sv SchemaVersion
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT id, host, format, version, content, change_reason, validation_errors_fixed, created_at, is_active
+		FROM schema_versions WHERE host = ? AND format = ? AND version = ?`,
+		host, format, version).Scan(&sv.ID, &sv.Host, &sv.Format, &sv.Version, &sv.Content,
+		&sv.ChangeReason, &sv.ValidationErrorsFixed, &sv.CreatedAt, &sv.IsActive)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schema version: %w", err)
+	}
+	return &sv, nil
+}
+
+// ListSchemaVersions lists all versions for a host/format
+func (db *DB) ListSchemaVersions(ctx context.Context, host, format string) ([]*SchemaVersion, error) {
+	rows, err := db.conn.QueryContext(ctx,
+		`SELECT id, host, format, version, content, change_reason, validation_errors_fixed, created_at, is_active
+		FROM schema_versions WHERE host = ? AND format = ? ORDER BY version DESC`,
+		host, format)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schema versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []*SchemaVersion
+	for rows.Next() {
+		var sv SchemaVersion
+		if err := rows.Scan(&sv.ID, &sv.Host, &sv.Format, &sv.Version, &sv.Content,
+			&sv.ChangeReason, &sv.ValidationErrorsFixed, &sv.CreatedAt, &sv.IsActive); err != nil {
+			return nil, fmt.Errorf("failed to scan schema version: %w", err)
+		}
+		versions = append(versions, &sv)
+	}
+	return versions, nil
+}
+
+// ActivateSchemaVersion activates a specific version and updates the main schemas table
+func (db *DB) ActivateSchemaVersion(ctx context.Context, host, format string, version int) error {
+	// Get the version to activate
+	sv, err := db.GetSchemaVersion(ctx, host, format, version)
+	if err != nil {
+		return err
+	}
+	if sv == nil {
+		return fmt.Errorf("version %d not found", version)
+	}
+
+	// Deactivate current active version
+	_, err = db.conn.ExecContext(ctx,
+		`UPDATE schema_versions SET is_active = 0 WHERE host = ? AND format = ? AND is_active = 1`,
+		host, format)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate current version: %w", err)
+	}
+
+	// Activate the new version
+	_, err = db.conn.ExecContext(ctx,
+		`UPDATE schema_versions SET is_active = 1 WHERE id = ?`, sv.ID)
+	if err != nil {
+		return fmt.Errorf("failed to activate version: %w", err)
+	}
+
+	// Update the main schemas table with the new content
+	_, err = db.conn.ExecContext(ctx,
+		`UPDATE schemas SET content = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE host = ? AND format = ? AND method = '*' AND path_pattern = '/*'`,
+		sv.Content, host, format)
+	if err != nil {
+		return fmt.Errorf("failed to update main schema: %w", err)
+	}
+
+	return nil
 }

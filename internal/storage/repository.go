@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // Repository defines the interface for all storage operations

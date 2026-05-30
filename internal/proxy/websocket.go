@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // WebSocketRelay handles WebSocket connection proxying and message capture

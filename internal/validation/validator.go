@@ -14,8 +14,8 @@ import (
 	"github.com/getkin/kin-openapi/routers/legacy"
 	"go.uber.org/zap"
 
-	"ai-proxy/internal/storage"
-	"ai-proxy/pkg/models"
+	"prism/internal/storage"
+	"prism/pkg/models"
 )
 
 // ValidationResult represents the result of validating a request
@@ -55,6 +55,49 @@ func NewValidator(db *storage.DB, logger *zap.Logger) *Validator {
 		routers: make(map[string]routers.Router),
 		specs:   make(map[string]*openapi3.T),
 	}
+}
+
+// NewValidatorWithSchema creates a validator pre-loaded with a specific schema
+// Used for previewing schema changes before activation
+func NewValidatorWithSchema(db *storage.DB, logger *zap.Logger, host string, schemaContent string) *Validator {
+	v := &Validator{
+		db:      db,
+		logger:  logger,
+		routers: make(map[string]routers.Router),
+		specs:   make(map[string]*openapi3.T),
+	}
+
+	// Parse and load the provided schema
+	loader := openapi3.NewLoader()
+	spec, err := loader.LoadFromData([]byte(schemaContent))
+	if err != nil {
+		logger.Error("Failed to parse schema for preview", zap.Error(err))
+		return v
+	}
+
+	// Fix missing descriptions
+	fixMissingDescriptions(spec)
+
+	// Create router
+	router, err := legacy.NewRouter(spec)
+	if err != nil {
+		logger.Error("Failed to create router for preview", zap.Error(err))
+		return v
+	}
+
+	v.routers[host] = router
+	v.specs[host] = spec
+
+	return v
+}
+
+// ClearCache removes the cached router and spec for a host
+// Call this when a schema is updated to force reload
+func (v *Validator) ClearCache(host string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.routers, host)
+	delete(v.specs, host)
 }
 
 // LoadSpec loads the OpenAPI spec for a host from the database

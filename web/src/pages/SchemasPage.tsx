@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listSchemas, getEnabledHosts, startAnalysis, getHostDiagram, getSchemaByFormat, getInferenceStatus } from '../api/client'
 import { ChevronRight, ChevronDown, Globe, FileCode, Copy, Download, GitBranch, Workflow, Sparkles, AlertCircle, Loader2 } from 'lucide-react'
@@ -122,6 +122,34 @@ export default function SchemasPage() {
     'go': 'Go',
     'json-schema': 'JSON Schema',
   }
+
+  const formatExtensions: Record<SchemaFormat, string> = {
+    'openapi': 'yaml',
+    'protobuf': 'proto',
+    'avro': 'avsc',
+    'sql': 'sql',
+    'typescript': 'ts',
+    'go': 'go',
+    'json-schema': 'json',
+  }
+
+  const handleCopy = useCallback(() => {
+    if (schemaContent?.content) {
+      navigator.clipboard.writeText(schemaContent.content)
+    }
+  }, [schemaContent])
+
+  const handleDownload = useCallback(() => {
+    if (!schemaContent?.content || !selectedHost) return
+    const ext = formatExtensions[selectedFormat]
+    const blob = new Blob([schemaContent.content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${selectedHost}.${ext}`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [schemaContent, selectedHost, selectedFormat])
 
   // Get diagram from fetched data or show placeholder
   const currentDiagram = diagramData?.diagram || (selectedHost ? `sequenceDiagram
@@ -282,11 +310,19 @@ export default function SchemasPage() {
 
           <div className="flex-1" />
 
-          <button className="flex items-center gap-1 px-2 py-1 text-sm hover:bg-proxy-border rounded">
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-sm hover:bg-proxy-border rounded disabled:opacity-40"
+            onClick={handleCopy}
+            disabled={!schemaContent?.content}
+          >
             <Copy size={14} />
             Copy
           </button>
-          <button className="flex items-center gap-1 px-2 py-1 text-sm hover:bg-proxy-border rounded">
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-sm hover:bg-proxy-border rounded disabled:opacity-40"
+            onClick={handleDownload}
+            disabled={!schemaContent?.content}
+          >
             <Download size={14} />
             Download
           </button>

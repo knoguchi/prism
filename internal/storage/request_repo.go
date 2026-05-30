@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // SaveRequest stores an HTTP request
@@ -363,6 +363,75 @@ func (db *DB) ListRequests(ctx context.Context, filter *RequestFilter) ([]*model
 	}
 
 	return items, total, nil
+}
+
+// ListEndpointUsage returns method/path usage summaries for a host.
+func (db *DB) ListEndpointUsage(ctx context.Context, host, method, pathPrefix string, limit int) ([]*models.EndpointUsage, error) {
+	if host == "" {
+		return nil, fmt.Errorf("host is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	var conditions []string
+	var args []interface{}
+
+	conditions = append(conditions, "r.host = ?")
+	args = append(args, host)
+
+	if method != "" {
+		conditions = append(conditions, "r.method = ?")
+		args = append(args, method)
+	}
+	if pathPrefix != "" {
+		conditions = append(conditions, "r.path LIKE ?")
+		args = append(args, pathPrefix+"%")
+	}
+
+	where := strings.Join(conditions, " AND ")
+
+	query := fmt.Sprintf(`
+		SELECT r.method, r.path, COUNT(*) as sample_count, MAX(r.captured_at) as last_seen
+		FROM requests r
+		WHERE %s
+		GROUP BY r.method, r.path
+		ORDER BY sample_count DESC, last_seen DESC
+		LIMIT ?
+	`, where)
+
+	args = append(args, limit)
+
+	rows, err := db.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list endpoint usage: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*models.EndpointUsage
+	for rows.Next() {
+		var item models.EndpointUsage
+		var lastSeenRaw sql.NullString
+		if err := rows.Scan(&item.Method, &item.Path, &item.SampleCount, &lastSeenRaw); err != nil {
+			return nil, fmt.Errorf("failed to scan endpoint usage: %w", err)
+		}
+		if lastSeenRaw.Valid && lastSeenRaw.String != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, lastSeenRaw.String)
+			if err != nil {
+				parsed, err = time.Parse("2006-01-02 15:04:05", lastSeenRaw.String)
+				if err != nil {
+					parsed = time.Time{}
+				}
+			}
+			item.LastSeen = parsed
+		}
+		results = append(results, &item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read endpoint usage rows: %w", err)
+	}
+
+	return results, nil
 }
 
 // DeleteRequest deletes a request by UUID

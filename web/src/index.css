@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Custom theme colors (Tailwind v4 CSS-based config) */
+@theme {
+  --color-proxy-bg: #1e1e1e;
+  --color-proxy-sidebar: #252526;
+  --color-proxy-border: #3c3c3c;
+  --color-proxy-text: #cccccc;
+  --color-proxy-text-dim: #808080;
+  --color-proxy-accent: #0e639c;
+  --color-proxy-success: #4ec9b0;
+  --color-proxy-warning: #dcdcaa;
+  --color-proxy-error: #f14c4c;
+}
+
 :root {
   font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
   font-size: 13px;
@@ -57,4 +70,16 @@ pre {
 
 code {
   font-family: 'SF Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+/* Resizable panel handles */
+.resize-handle {
+  width: 8px;
+  background: var(--color-proxy-border);
+  transition: background 0.15s;
+  cursor: col-resize;
+}
+
+.resize-handle:hover {
+  background: var(--color-proxy-accent);
 }

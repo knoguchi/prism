@@ -3,35 +3,49 @@
 # Default target
 all: build
 
-# Build all binaries and web
-build: build-proxy build-mcp build-web
+# Build all binaries with embedded web UI
+build: build-web build-proxy build-mcp
+	@echo "Build complete. Run with: ./bin/prism --config ./configs/proxy.yaml"
 
-# Build proxy server
-build-proxy:
-	@echo "Building proxy server..."
-	@go build -o bin/ai-proxy ./cmd/proxy
+# Build proxy server (with embedded web UI)
+build-proxy: build-web
+	@echo "Building proxy server (with embedded web UI)..."
+	@go build -o bin/prism ./cmd/proxy
+
+# Build proxy server without web (for development)
+build-proxy-only:
+	@echo "Building proxy server (API only, no web UI)..."
+	@go build -o bin/prism ./cmd/proxy
 
 # Build MCP server
 build-mcp:
 	@echo "Building MCP server..."
-	@go build -o bin/ai-proxy-mcp ./cmd/mcp
+	@go build -o bin/prism-mcp ./cmd/mcp
 
-# Run proxy server
-run: run-proxy
+# Run proxy server (production mode - uses embedded web UI)
+run: build
+	@echo "Starting Prism (production mode)..."
+	@echo "Web UI: http://localhost:9090"
+	@echo "Proxy:  localhost:8080"
+	@./bin/prism --config ./configs/proxy.yaml
 
-run-proxy: build-proxy
-	@echo "Starting proxy server..."
-	@./bin/ai-proxy --config ./configs/proxy.yaml
+# Run proxy server (development mode - API only)
+run-proxy: build-proxy-only
+	@echo "Starting proxy server (API only)..."
+	@echo "API:    http://localhost:9090"
+	@echo "Proxy:  localhost:8080"
+	@echo "Use 'make run-web' in another terminal for web UI"
+	@./bin/prism --config ./configs/proxy.yaml
 
 # Run proxy server with filtered logs (no TLS handshake noise)
-run-quiet: build-proxy
+run-quiet: build-proxy-only
 	@echo "Starting proxy server (filtered logs)..."
-	@./bin/ai-proxy --config ./configs/proxy.yaml 2>&1 | grep -v "Cannot handshake"
+	@./bin/prism --config ./configs/proxy.yaml 2>&1 | grep -v "Cannot handshake"
 
 # Run MCP server
 run-mcp: build-mcp
 	@echo "Starting MCP server..."
-	@./bin/ai-proxy-mcp --db ./data/proxy.db
+	@./bin/prism-mcp --db ./data/proxy.db
 
 # Build web UI
 build-web:
@@ -45,10 +59,12 @@ run-web:
 
 # Run full dev environment (proxy + web)
 dev:
-	@echo "Starting development environment..."
-	@echo "Run these in separate terminals:"
-	@echo "  make run-proxy  (proxy on :8080, API on :9090)"
-	@echo "  make run-web    (web UI on :3000)"
+	@echo "Development mode:"
+	@echo "  Terminal 1: make run-proxy  (API on :9090, Proxy on :8080)"
+	@echo "  Terminal 2: make run-web    (Web UI on :3000)"
+	@echo ""
+	@echo "Production mode (single binary):"
+	@echo "  make run                    (Everything on :9090 + :8080)"
 
 # Clean build artifacts
 clean:
@@ -77,7 +93,7 @@ lint:
 generate-ca:
 	@echo "Generating CA certificate..."
 	@mkdir -p configs/ca
-	@./bin/ai-proxy --generate-ca
+	@./bin/prism --generate-ca
 
 # Install development dependencies
 dev-deps:
@@ -89,18 +105,24 @@ deps:
 	@echo "Downloading dependencies..."
 	@go mod download
 	@go mod tidy
+	@cd web && npm install
 
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  build       - Build all (proxy, mcp, web)"
-	@echo "  build-proxy - Build proxy server"
-	@echo "  build-mcp   - Build MCP server"
-	@echo "  build-web   - Build web UI"
-	@echo "  run         - Run proxy server"
-	@echo "  run-mcp     - Run MCP server"
-	@echo "  run-web     - Run web dev server"
+	@echo ""
+	@echo "Production:"
+	@echo "  build       - Build all (web + proxy + mcp) with embedded UI"
+	@echo "  run         - Run production server (embedded web UI)"
+	@echo ""
+	@echo "Development:"
+	@echo "  run-proxy   - Run proxy server (API only)"
+	@echo "  run-web     - Run web dev server (hot reload)"
 	@echo "  dev         - Show dev environment instructions"
+	@echo ""
+	@echo "Other:"
+	@echo "  build-mcp   - Build MCP server"
+	@echo "  run-mcp     - Run MCP server"
 	@echo "  clean       - Remove build artifacts"
 	@echo "  test        - Run tests"
 	@echo "  fmt         - Format code"

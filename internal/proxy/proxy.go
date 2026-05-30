@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -11,10 +13,10 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"ai-proxy/internal/ca"
-	"ai-proxy/internal/inference"
-	"ai-proxy/internal/storage"
-	"ai-proxy/pkg/models"
+	"prism/internal/ca"
+	"prism/internal/inference"
+	"prism/internal/storage"
+	"prism/pkg/models"
 )
 
 // Server is the MITM proxy server
@@ -87,6 +89,12 @@ func (s *Server) setupHTTPS() {
 func (s *Server) setupHandlers() {
 	// Capture all requests
 	s.proxy.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+		// Serve CA certificate for special paths/hosts
+		// Supports: http://localhost:8080/ca.crt, http://prism.proxy/ca.crt, http://prism.proxy/
+		if resp := s.serveCAIfRequested(req); resp != nil {
+			return req, resp
+		}
+
 		// Generate UUID and start timing
 		captureID := uuid.New().String()
 		startTime := time.Now()
@@ -244,6 +252,59 @@ func (s *Server) StartPruner(interval time.Duration, maxPerPathEnabled, ephemera
 // InferenceEngine returns the schema inference engine
 func (s *Server) InferenceEngine() *inference.Engine {
 	return s.inference
+}
+
+// serveCAIfRequested checks if the request is for the CA certificate and returns it
+// Supports multiple access methods:
+// - http://localhost:8080/ca.crt (direct to proxy)
+// - http://prism.proxy/ca.crt or http://prism.proxy/ (magic hostname)
+func (s *Server) serveCAIfRequested(req *http.Request) *http.Response {
+	host := req.Host
+	path := req.URL.Path
+
+	// Check for magic hostname "prism.proxy"
+	if host == "prism.proxy" || host == "prism.proxy:80" {
+		return s.buildCAResponse(req)
+	}
+
+	// Check for direct request to proxy with /ca.crt path
+	// This works when browser sends request directly to proxy (not via CONNECT)
+	if path == "/ca.crt" || path == "/prism-ca.crt" {
+		// Only serve if it's a direct request (no host or localhost)
+		if host == "" || host == "localhost" || host == "localhost:8080" || host == "127.0.0.1" || host == "127.0.0.1:8080" {
+			return s.buildCAResponse(req)
+		}
+	}
+
+	return nil
+}
+
+// buildCAResponse creates an HTTP response with the CA certificate
+func (s *Server) buildCAResponse(req *http.Request) *http.Response {
+	certPEM := s.caManager.CACertPEM()
+
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(bytes.NewReader(certPEM)),
+		ContentLength: int64(len(certPEM)),
+		Request:       req,
+	}
+
+	resp.Header.Set("Content-Type", "application/x-pem-file")
+	resp.Header.Set("Content-Disposition", "attachment; filename=\"prism-ca.crt\"")
+	resp.Header.Set("Cache-Control", "no-cache")
+
+	s.logger.Info("Served CA certificate",
+		zap.String("path", req.URL.Path),
+		zap.String("host", req.Host),
+	)
+
+	return resp
 }
 
 // Generator returns a new schema generator using the inference engine

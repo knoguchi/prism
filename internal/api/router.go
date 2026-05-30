@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,10 +13,10 @@ import (
 	"github.com/go-chi/cors"
 	"go.uber.org/zap"
 
-	"ai-proxy/internal/ca"
-	"ai-proxy/internal/storage"
-	"ai-proxy/internal/validation"
-	"ai-proxy/pkg/models"
+	"prism/internal/ca"
+	"prism/internal/storage"
+	"prism/internal/validation"
+	"prism/pkg/models"
 )
 
 // Server is the REST API server
@@ -28,10 +29,12 @@ type Server struct {
 	server    *http.Server
 	inference *InferenceManager
 	validator *validation.Validator
+	staticFS  fs.FS
 }
 
 // NewServer creates a new API server
-func NewServer(db *storage.DB, caManager *ca.Manager, logger *zap.Logger, cfg *models.Config) *Server {
+// staticFS is the embedded web UI filesystem (can be nil for API-only mode)
+func NewServer(db *storage.DB, caManager *ca.Manager, logger *zap.Logger, cfg *models.Config, staticFS fs.FS) *Server {
 	s := &Server{
 		router:    chi.NewRouter(),
 		db:        db,
@@ -39,6 +42,7 @@ func NewServer(db *storage.DB, caManager *ca.Manager, logger *zap.Logger, cfg *m
 		logger:    logger,
 		config:    cfg,
 		validator: validation.NewValidator(db, logger),
+		staticFS:  staticFS,
 	}
 
 	// Initialize inference manager if LLM is configured
@@ -76,7 +80,7 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.RealIP)
 	s.router.Use(middleware.Recoverer)
-	s.router.Use(middleware.Timeout(60 * time.Second))
+	s.router.Use(middleware.Timeout(180 * time.Second)) // 3 min for LLM requests
 }
 
 // setupRoutes configures API routes
@@ -92,6 +96,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/captures", s.handleListCaptures)
 		r.Get("/captures/{id}", s.handleGetCapture)
 		r.Delete("/captures/{id}", s.handleDeleteCapture)
+		r.Delete("/captures", s.handleClearCaptures)
 
 		// Search
 		r.Get("/search", s.handleSearch)
@@ -104,6 +109,12 @@ func (s *Server) setupRoutes() {
 		r.Get("/schemas", s.handleListSchemas)
 		r.Get("/schemas/{host}", s.handleGetHostSchema)
 		r.Get("/schemas/{host}/format/{format}", s.handleGetSchemaByFormat)
+
+		// Schema versioning and AI fix
+		r.Get("/schemas/{host}/versions", s.handleListSchemaVersions)
+		r.Post("/schemas/{host}/fix", s.handleRequestSchemaFix)
+		r.Post("/schemas/{host}/preview-fix", s.handlePreviewSchemaFix)
+		r.Post("/schemas/{host}/versions/{version}/activate", s.handleActivateSchemaVersion)
 
 		// Statistics
 		r.Get("/stats", s.handleGetStats)
@@ -137,6 +148,9 @@ func (s *Server) setupRoutes() {
 		r.Get("/validation/{host}/summary", s.handleValidationSummary)
 		r.Get("/validation/request/{id}", s.handleValidateRequest)
 	})
+
+	// Serve embedded static files (Web UI) - must be last
+	r.Handle("/*", StaticHandler(s.staticFS))
 }
 
 // Response helpers
@@ -256,6 +270,25 @@ func (s *Server) handleDeleteCapture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleClearCaptures(w http.ResponseWriter, r *http.Request) {
+	host := r.URL.Query().Get("host")
+	filter := &storage.RequestFilter{
+		Host:  host,
+		Limit: 10000,
+	}
+
+	deleted, err := s.db.DeleteRequests(r.Context(), filter)
+	if err != nil {
+		s.logger.Error("Failed to clear captures", zap.Error(err))
+		s.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to clear captures")
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"deleted": deleted,
+	})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -475,7 +508,7 @@ func (s *Server) handleDownloadCA(w http.ResponseWriter, r *http.Request) {
 	pem := s.caManager.CACertPEM()
 
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"ai-proxy-ca.crt\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"prism-ca.crt\"")
 	w.Write(pem)
 }
 
@@ -916,4 +949,206 @@ func (s *Server) handleValidateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respondJSON(w, http.StatusOK, result)
+}
+
+// Schema versioning and AI fix handlers
+
+// handleListSchemaVersions lists all versions for a host's schema
+func (s *Server) handleListSchemaVersions(w http.ResponseWriter, r *http.Request) {
+	host := chi.URLParam(r, "host")
+	if host == "" {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Host is required")
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "openapi"
+	}
+
+	versions, err := s.db.ListSchemaVersions(r.Context(), host, format)
+	if err != nil {
+		s.logger.Error("Failed to list schema versions", zap.Error(err))
+		s.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list versions")
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"host":     host,
+		"format":   format,
+		"versions": versions,
+	})
+}
+
+// handleRequestSchemaFix uses AI to fix schema based on validation errors
+func (s *Server) handleRequestSchemaFix(w http.ResponseWriter, r *http.Request) {
+	host := chi.URLParam(r, "host")
+	if host == "" {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Host is required")
+		return
+	}
+
+	if s.inference == nil {
+		s.respondError(w, http.StatusServiceUnavailable, "LLM_NOT_CONFIGURED", "LLM is not configured")
+		return
+	}
+
+	var req struct {
+		ValidationErrors []string `json:"validation_errors"`
+		SampleData       string   `json:"sample_data,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		return
+	}
+
+	if len(req.ValidationErrors) == 0 {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Validation errors are required")
+		return
+	}
+
+	// Get current OpenAPI schema
+	schemas, err := s.db.GetSchemasByFormat(r.Context(), host, "openapi")
+	if err != nil || len(schemas) == 0 {
+		s.respondError(w, http.StatusNotFound, "NOT_FOUND", "No OpenAPI schema found for this host")
+		return
+	}
+
+	currentSchema := schemas[0].Content
+
+	// Call AI to fix the schema
+	fixResp, err := s.inference.FixSchema(r.Context(), currentSchema, req.ValidationErrors, req.SampleData)
+	if err != nil {
+		s.logger.Error("Failed to fix schema", zap.Error(err))
+		s.respondError(w, http.StatusInternalServerError, "FIX_FAILED", err.Error())
+		return
+	}
+
+	// Save as a new version (not active yet - pending review)
+	errorsFixed, _ := json.Marshal(req.ValidationErrors)
+	version, err := s.db.SaveSchemaVersion(
+		r.Context(),
+		host,
+		"openapi",
+		fixResp.FixedSchema,
+		fixResp.Reasoning,
+		string(errorsFixed),
+		false, // Don't make active - user needs to approve
+	)
+	if err != nil {
+		s.logger.Error("Failed to save schema version", zap.Error(err))
+		s.respondError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+		return
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"version":      version.Version,
+		"fixed_schema": fixResp.FixedSchema,
+		"changes":      fixResp.Changes,
+		"reasoning":    fixResp.Reasoning,
+	})
+}
+
+// handlePreviewSchemaFix validates sample requests against a proposed schema version
+func (s *Server) handlePreviewSchemaFix(w http.ResponseWriter, r *http.Request) {
+	host := chi.URLParam(r, "host")
+	if host == "" {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Host is required")
+		return
+	}
+
+	var req struct {
+		Version    int      `json:"version"`
+		RequestIDs []string `json:"request_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid JSON")
+		return
+	}
+
+	// Get the schema version
+	version, err := s.db.GetSchemaVersion(r.Context(), host, "openapi", req.Version)
+	if err != nil || version == nil {
+		s.respondError(w, http.StatusNotFound, "NOT_FOUND", "Schema version not found")
+		return
+	}
+
+	// Create a temporary validator with the proposed schema
+	previewValidator := validation.NewValidatorWithSchema(s.db, s.logger, host, version.Content)
+
+	results := make([]map[string]interface{}, 0)
+	validCount := 0
+	invalidCount := 0
+
+	for _, requestID := range req.RequestIDs {
+		capture, err := s.db.GetCapture(r.Context(), requestID)
+		if err != nil || capture == nil {
+			continue
+		}
+
+		result, err := previewValidator.ValidateRequest(r.Context(), capture)
+		if err != nil {
+			results = append(results, map[string]interface{}{
+				"request_id": requestID,
+				"valid":      false,
+				"error":      err.Error(),
+			})
+			invalidCount++
+			continue
+		}
+
+		if result.Valid {
+			validCount++
+		} else {
+			invalidCount++
+		}
+
+		results = append(results, map[string]interface{}{
+			"request_id":   requestID,
+			"method":       result.Method,
+			"path":         result.Path,
+			"valid":        result.Valid,
+			"matched_path": result.MatchedPath,
+			"errors":       result.Errors,
+		})
+	}
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"version":       req.Version,
+		"results":       results,
+		"valid_count":   validCount,
+		"invalid_count": invalidCount,
+	})
+}
+
+// handleActivateSchemaVersion activates a schema version (user accepts the fix)
+func (s *Server) handleActivateSchemaVersion(w http.ResponseWriter, r *http.Request) {
+	host := chi.URLParam(r, "host")
+	if host == "" {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Host is required")
+		return
+	}
+
+	versionStr := chi.URLParam(r, "version")
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid version number")
+		return
+	}
+
+	// Activate the version
+	if err := s.db.ActivateSchemaVersion(r.Context(), host, "openapi", version); err != nil {
+		s.logger.Error("Failed to activate schema version", zap.Error(err))
+		s.respondError(w, http.StatusInternalServerError, "ACTIVATION_FAILED", err.Error())
+		return
+	}
+
+	// Clear the validator cache so it reloads the new schema
+	s.validator.ClearCache(host)
+
+	s.respondJSON(w, http.StatusOK, map[string]interface{}{
+		"host":    host,
+		"version": version,
+		"message": "Schema version activated successfully",
+	})
 }

@@ -60,3 +60,11 @@ type CaptureListItem struct {
 	LatencyMs    int64     `json:"latency_ms"`
 	CapturedAt   time.Time `json:"captured_at"`
 }
+
+// EndpointUsage summarizes observed traffic for a method/path pair.
+type EndpointUsage struct {
+	Method      string    `json:"method"`
+	Path        string    `json:"path"`
+	SampleCount int       `json:"sample_count"`
+	LastSeen    time.Time `json:"last_seen"`
+}

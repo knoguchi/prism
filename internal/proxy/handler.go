@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 const (

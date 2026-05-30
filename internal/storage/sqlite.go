@@ -67,6 +67,7 @@ func (db *DB) migrate() error {
 		migrationCreateConfig,
 		migrationCreateIndexes,
 		migrationCreateFTS,
+		migrationCreateSchemaVersions,
 	}
 
 	for i, migration := range migrations {
@@ -196,4 +197,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS requests_fts USING fts5(
     content=requests,
     content_rowid=id
 );
+`
+
+const migrationCreateSchemaVersions = `
+CREATE TABLE IF NOT EXISTS schema_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    format TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    change_reason TEXT,
+    validation_errors_fixed TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT 0,
+    UNIQUE(host, format, version)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_versions_host ON schema_versions(host, format);
+CREATE INDEX IF NOT EXISTS idx_schema_versions_active ON schema_versions(host, format, is_active);
 `

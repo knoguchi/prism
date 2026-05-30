@@ -11,11 +11,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
-	"ai-proxy/internal/codegen"
-	"ai-proxy/internal/inference"
-	"ai-proxy/internal/llm"
-	"ai-proxy/internal/storage"
-	"ai-proxy/pkg/models"
+	"prism/internal/codegen"
+	"prism/internal/inference"
+	"prism/internal/llm"
+	"prism/internal/storage"
+	"prism/pkg/models"
 )
 
 // InferenceManager handles AI inference operations
@@ -585,6 +585,33 @@ func (s *Server) handleGetInferenceStatus(w http.ResponseWriter, r *http.Request
 		Host:   host,
 		Status: status,
 	})
+}
+
+// SchemaFixResponse represents an AI-generated schema fix
+type SchemaFixResponse struct {
+	FixedSchema string   `json:"fixed_schema"`
+	Changes     []string `json:"changes"`
+	Reasoning   string   `json:"reasoning"`
+}
+
+// FixSchema uses AI to fix an OpenAPI schema based on validation errors
+func (im *InferenceManager) FixSchema(ctx context.Context, currentSchema string, validationErrors []string, sampleData string) (*SchemaFixResponse, error) {
+	req := &llm.SchemaFixRequest{
+		CurrentSchema:    currentSchema,
+		ValidationErrors: validationErrors,
+		SampleData:       sampleData,
+	}
+
+	resp, err := im.service.FixSchemaErrors(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SchemaFixResponse{
+		FixedSchema: resp.FixedSchema,
+		Changes:     resp.Changes,
+		Reasoning:   resp.Reasoning,
+	}, nil
 }
 
 // handleGetDiagram returns the Mermaid diagram for a host

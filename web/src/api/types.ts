@@ -99,14 +99,3 @@ export interface Stats {
   by_status: Record<string, number>
   top_hosts: { host: string; count: number }[]
 }
-
-// Tree structure for Charles-like view
-export interface TreeNode {
-  id: string
-  name: string
-  type: 'host' | 'path' | 'endpoint'
-  method?: string
-  children?: TreeNode[]
-  captures?: CaptureListItem[]
-  expanded?: boolean
-}

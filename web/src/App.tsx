@@ -82,12 +82,14 @@ function App() {
         </nav>
 
         {/* Page content */}
-        <Routes>
-          <Route path="/" element={<TrafficPage />} />
-          <Route path="/schemas" element={<SchemasPage />} />
-          <Route path="/validation" element={<ValidationPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <div className="flex-1 flex overflow-hidden">
+          <Routes>
+            <Route path="/" element={<TrafficPage />} />
+            <Route path="/schemas" element={<SchemasPage />} />
+            <Route path="/validation" element={<ValidationPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </div>
       </div>
     </BrowserRouter>
   )

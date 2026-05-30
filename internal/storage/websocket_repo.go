@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // SaveWebSocketMessage stores a WebSocket message

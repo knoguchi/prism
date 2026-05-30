@@ -1,5 +1,5 @@
 proxy:
-  listen: ":8080"
+  listen: "0.0.0.0:8080"
   timeout: 30
   skip_hosts:
     - "*.sentinelone.net"
@@ -9,7 +9,7 @@ proxy:
 api:
   listen: ":9090"
   cors_origins:
-    - "http://localhost:3000"
+    - "http://localhost:3333"
 
 tls:
   ca_cert: "./configs/ca/ca.crt"

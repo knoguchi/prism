@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // InferenceService handles AI-powered traffic analysis
@@ -820,4 +820,272 @@ Output only the generated code, no explanations or markdown.`, format)
 	}
 
 	return content, nil
+}
+
+// SchemaFixRequest represents a request to fix schema validation errors
+type SchemaFixRequest struct {
+	CurrentSchema    string   `json:"current_schema"`
+	ValidationErrors []string `json:"validation_errors"`
+	SampleData       string   `json:"sample_data,omitempty"` // The actual response that failed validation
+}
+
+// SchemaFixResponse represents the AI's proposed fix
+type SchemaFixResponse struct {
+	FixedSchema string   `json:"fixed_schema"`
+	Changes     []string `json:"changes"`     // Description of changes made
+	Reasoning   string   `json:"reasoning"`   // Why these changes were made
+}
+
+// SchemaPatch represents a single patch to apply to the schema
+type SchemaPatch struct {
+	Path      string `json:"path"`      // JSON path like "/components/schemas/PostType/enum"
+	Operation string `json:"operation"` // "add", "replace", "remove"
+	Value     any    `json:"value"`     // The value to add/replace
+}
+
+// FixSchemaErrors uses AI to fix OpenAPI schema based on validation errors
+// Uses a patch-based approach to handle large schemas efficiently
+func (s *InferenceService) FixSchemaErrors(ctx context.Context, req *SchemaFixRequest) (*SchemaFixResponse, error) {
+	if req.CurrentSchema == "" || len(req.ValidationErrors) == 0 {
+		return nil, fmt.Errorf("schema and validation errors are required")
+	}
+
+	errorsText := strings.Join(req.ValidationErrors, "\n")
+
+	// Parse schema to extract relevant context
+	var schema map[string]interface{}
+	if err := json.Unmarshal([]byte(req.CurrentSchema), &schema); err != nil {
+		return nil, fmt.Errorf("failed to parse schema: %w", err)
+	}
+
+	// Extract only relevant parts based on errors (components/schemas section)
+	schemaContext := extractRelevantContext(schema, req.ValidationErrors)
+
+	systemPrompt := `You are an OpenAPI schema expert. Given validation errors and relevant schema context, generate JSON patches to fix the schema.
+
+RULES:
+1. Generate minimal patches - only fix what's broken
+2. If an enum is missing values, add the new values to the enum array
+3. If a field should be optional, remove it from the required array
+4. If a field has wrong type, update the type
+5. Use JSON Patch format with path, operation (add/replace/remove), and value
+
+OUTPUT FORMAT (JSON only, no markdown):
+{
+  "patches": [
+    {"path": "/components/schemas/TypeName/properties/field/enum", "operation": "replace", "value": ["A", "B", "C", "NEW_VALUE"]},
+    {"path": "/components/schemas/TypeName/required", "operation": "replace", "value": ["field1", "field2"]}
+  ],
+  "changes": ["Added NEW_VALUE to TypeName.field enum", "Made field3 optional"],
+  "reasoning": "The API returns NEW_VALUE which was not in the enum"
+}`
+
+	userPrompt := fmt.Sprintf(`Fix the schema based on these validation errors:
+
+VALIDATION ERRORS:
+%s
+
+RELEVANT SCHEMA CONTEXT:
+%s`, errorsText, schemaContext)
+
+	if req.SampleData != "" {
+		// Truncate sample data if too large
+		sampleData := req.SampleData
+		if len(sampleData) > 2000 {
+			sampleData = sampleData[:2000] + "..."
+		}
+		userPrompt += fmt.Sprintf(`
+
+ACTUAL API RESPONSE (that failed validation):
+%s`, sampleData)
+	}
+
+	resp, err := s.provider.Complete(ctx, &CompletionRequest{
+		SystemPrompt: systemPrompt,
+		UserPrompt:   userPrompt,
+		Temperature:  0.1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM completion failed: %w", err)
+	}
+
+	content := strings.TrimSpace(resp.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	// Parse the patch response
+	var patchResponse struct {
+		Patches   []SchemaPatch `json:"patches"`
+		Changes   []string      `json:"changes"`
+		Reasoning string        `json:"reasoning"`
+	}
+	if err := json.Unmarshal([]byte(content), &patchResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse AI response: %w (content: %s)", err, content[:min(len(content), 200)])
+	}
+
+	// Apply patches to the original schema
+	fixedSchema, err := applyPatches(schema, patchResponse.Patches)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply patches: %w", err)
+	}
+
+	fixedJSON, err := json.MarshalIndent(fixedSchema, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal fixed schema: %w", err)
+	}
+
+	return &SchemaFixResponse{
+		FixedSchema: string(fixedJSON),
+		Changes:     patchResponse.Changes,
+		Reasoning:   patchResponse.Reasoning,
+	}, nil
+}
+
+// extractRelevantContext extracts only the schema parts relevant to the errors
+func extractRelevantContext(schema map[string]interface{}, errors []string) string {
+	// For now, extract components/schemas section which contains type definitions
+	// This is typically where enum and type mismatches occur
+	context := make(map[string]interface{})
+
+	if components, ok := schema["components"].(map[string]interface{}); ok {
+		if schemas, ok := components["schemas"].(map[string]interface{}); ok {
+			// Include all schemas but summarize large ones
+			summarizedSchemas := make(map[string]interface{})
+			for name, s := range schemas {
+				if schemaMap, ok := s.(map[string]interface{}); ok {
+					// Keep full schema if it has enum (common fix target)
+					if _, hasEnum := schemaMap["enum"]; hasEnum {
+						summarizedSchemas[name] = schemaMap
+					} else if props, hasProps := schemaMap["properties"].(map[string]interface{}); hasProps {
+						// Check if any property has enum
+						hasEnumProp := false
+						for _, prop := range props {
+							if propMap, ok := prop.(map[string]interface{}); ok {
+								if _, hasEnum := propMap["enum"]; hasEnum {
+									hasEnumProp = true
+									break
+								}
+							}
+						}
+						if hasEnumProp {
+							summarizedSchemas[name] = schemaMap
+						} else {
+							// Summarize: just include type and required fields
+							summary := map[string]interface{}{"type": schemaMap["type"]}
+							if req, ok := schemaMap["required"]; ok {
+								summary["required"] = req
+							}
+							// Include property names only
+							if props, ok := schemaMap["properties"].(map[string]interface{}); ok {
+								propNames := make([]string, 0, len(props))
+								for name := range props {
+									propNames = append(propNames, name)
+								}
+								summary["properties"] = propNames
+							}
+							summarizedSchemas[name] = summary
+						}
+					} else {
+						summarizedSchemas[name] = schemaMap
+					}
+				}
+			}
+			context["components"] = map[string]interface{}{"schemas": summarizedSchemas}
+		}
+	}
+
+	contextJSON, _ := json.MarshalIndent(context, "", "  ")
+	return string(contextJSON)
+}
+
+// applyPatches applies JSON patches to the schema
+func applyPatches(schema map[string]interface{}, patches []SchemaPatch) (map[string]interface{}, error) {
+	result := deepCopy(schema)
+
+	for _, patch := range patches {
+		if err := applyPatch(result, patch); err != nil {
+			return nil, fmt.Errorf("failed to apply patch %s: %w", patch.Path, err)
+		}
+	}
+
+	return result, nil
+}
+
+// applyPatch applies a single patch to the schema
+func applyPatch(schema map[string]interface{}, patch SchemaPatch) error {
+	parts := strings.Split(strings.TrimPrefix(patch.Path, "/"), "/")
+	if len(parts) == 0 {
+		return fmt.Errorf("invalid path: %s", patch.Path)
+	}
+
+	// Navigate to parent
+	current := schema
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+		if next, ok := current[part].(map[string]interface{}); ok {
+			current = next
+		} else {
+			// Create intermediate objects if needed for "add" operation
+			if patch.Operation == "add" {
+				newMap := make(map[string]interface{})
+				current[part] = newMap
+				current = newMap
+			} else {
+				return fmt.Errorf("path not found: %s at %s", patch.Path, part)
+			}
+		}
+	}
+
+	key := parts[len(parts)-1]
+
+	switch patch.Operation {
+	case "add", "replace":
+		current[key] = patch.Value
+	case "remove":
+		delete(current, key)
+	default:
+		return fmt.Errorf("unknown operation: %s", patch.Operation)
+	}
+
+	return nil
+}
+
+// deepCopy creates a deep copy of a map
+func deepCopy(m map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range m {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[k] = deepCopy(val)
+		case []interface{}:
+			result[k] = deepCopySlice(val)
+		default:
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func deepCopySlice(s []interface{}) []interface{} {
+	result := make([]interface{}, len(s))
+	for i, v := range s {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[i] = deepCopy(val)
+		case []interface{}:
+			result[i] = deepCopySlice(val)
+		default:
+			result[i] = v
+		}
+	}
+	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

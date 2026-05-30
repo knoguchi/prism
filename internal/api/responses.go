@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // CaptureResponse is the API response for a capture detail

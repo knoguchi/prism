@@ -54,7 +54,7 @@ export default function SettingsPage() {
           <div className="space-y-3 text-sm">
             <div className="flex justify-between">
               <span className="text-proxy-text-dim">Subject</span>
-              <span>{caInfo?.subject || 'AI Proxy CA'}</span>
+              <span>{caInfo?.subject || 'Prism CA'}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-proxy-text-dim">Valid From</span>

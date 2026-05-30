@@ -1,17 +1,15 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { listCaptures, getCapture, getEnabledHosts, addEnabledHost, removeEnabledHost } from '../api/client'
+import { Group, Panel, Separator } from 'react-resizable-panels'
+import { listCaptures, getCapture, getEnabledHosts, addEnabledHost, removeEnabledHost, clearCaptures } from '../api/client'
 import type { CaptureListItem } from '../api/types'
 import TrafficList from '../components/TrafficList'
 import RequestDetail from '../components/RequestDetail'
 import Sidebar from '../components/Sidebar'
 import TrafficHeader from '../components/TrafficHeader'
 
-type ViewMode = 'list' | 'tree'
-
 export default function TrafficPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [filters, setFilters] = useState({
     host: '',
     method: '',
@@ -57,11 +55,25 @@ export default function TrafficPage() {
   // All captures from single call - used by both sidebar and traffic list
   const allCaptures = capturesData?.data || []
 
-  // Filter to enabled hosts for the traffic list (middle pane)
+  // Filter to enabled hosts for the traffic list (middle pane), then apply search
   const filteredCaptures = useMemo(() => {
-    if (enabledHosts.size === 0) return allCaptures
-    return allCaptures.filter(c => enabledHosts.has(c.host))
-  }, [allCaptures, enabledHosts])
+    let results = enabledHosts.size === 0
+      ? allCaptures
+      : allCaptures.filter(c => enabledHosts.has(c.host))
+
+    // Client-side search filter
+    if (filters.search) {
+      const q = filters.search.toLowerCase()
+      results = results.filter(c =>
+        c.url.toLowerCase().includes(q) ||
+        c.host.toLowerCase().includes(q) ||
+        c.path.toLowerCase().includes(q) ||
+        c.method.toLowerCase().includes(q)
+      )
+    }
+
+    return results
+  }, [allCaptures, enabledHosts, filters.search])
 
   // Toggle a host's enabled state via API
   const handleToggleHost = useCallback(async (host: string) => {
@@ -82,47 +94,76 @@ export default function TrafficPage() {
     setSelectedId(capture.id)
   }
 
+  const handleExport = useCallback(() => {
+    const blob = new Blob([JSON.stringify(filteredCaptures, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `prism-captures-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [filteredCaptures])
+
+  const handleClear = useCallback(async () => {
+    if (!window.confirm('Clear all captured traffic? This cannot be undone.')) return
+    try {
+      await clearCaptures()
+      setSelectedId(null)
+      queryClient.invalidateQueries({ queryKey: ['captures'] })
+    } catch (e) {
+      console.error('Failed to clear captures:', e)
+    }
+  }, [queryClient])
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Traffic-specific header with filters */}
       <TrafficHeader
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
         filters={filters}
         onFiltersChange={setFilters}
         totalCaptures={filteredCaptures.length}
         allCaptures={capturesData?.pagination?.total || 0}
+        onExport={handleExport}
+        onClear={handleClear}
       />
 
       {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
+      <Group orientation="horizontal" className="flex-1 h-full w-full">
         {/* Sidebar - shows ALL hosts from captures so users can toggle them */}
-        <Sidebar
-          captures={allCaptures}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          enabledHosts={enabledHosts}
-          onToggleHost={handleToggleHost}
-        />
-
-        {/* Traffic list */}
-        <div className="flex-1 flex flex-col border-r border-proxy-border">
-          <TrafficList
-            captures={filteredCaptures}
+        <Panel id="sidebar" defaultSize="20%" minSize="150px" maxSize="50%">
+          <Sidebar
+            captures={allCaptures}
             selectedId={selectedId}
             onSelect={handleSelect}
-            loading={listLoading}
+            enabledHosts={enabledHosts}
+            onToggleHost={handleToggleHost}
           />
-        </div>
+        </Panel>
+        <Separator id="sidebar-separator" className="resize-handle" />
+
+        {/* Traffic list */}
+        <Panel id="traffic-list" defaultSize="50%" minSize="200px">
+          <div className="h-full w-full flex flex-col">
+            <TrafficList
+              captures={filteredCaptures}
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              loading={listLoading}
+            />
+          </div>
+        </Panel>
+        <Separator id="detail-separator" className="resize-handle" />
 
         {/* Detail panel */}
-        <div className="w-[500px] flex flex-col overflow-hidden">
-          <RequestDetail
-            capture={selectedCapture || null}
-            loading={detailLoading && !!selectedId}
-          />
-        </div>
-      </div>
+        <Panel id="detail" defaultSize="30%" minSize="200px">
+          <div className="h-full w-full flex flex-col overflow-hidden">
+            <RequestDetail
+              capture={selectedCapture || null}
+              loading={detailLoading && !!selectedId}
+            />
+          </div>
+        </Panel>
+      </Group>
     </div>
   )
 }

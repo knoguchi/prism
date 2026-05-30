@@ -1,15 +1,31 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"ai-proxy/internal/storage"
+	"prism/internal/storage"
+	"prism/pkg/models"
 )
 
-// Server is the MCP server for AI Proxy
+// DBStore defines the storage interface used by MCP handlers.
+// This allows for easy mocking in tests.
+type DBStore interface {
+	ListRequests(ctx context.Context, filter *storage.RequestFilter) ([]*models.CaptureListItem, int64, error)
+	GetRequest(ctx context.Context, uuid string) (*models.HTTPRequest, error)
+	GetResponse(ctx context.Context, requestUUID string) (*models.HTTPResponse, error)
+	GetCapture(ctx context.Context, uuid string) (*models.Capture, error)
+	GetWebSocketMessages(ctx context.Context, requestUUID string, filter *storage.WSFilter) ([]*models.WebSocketMessage, int64, error)
+	GetSchema(ctx context.Context, host, method, pathPattern string, format models.SchemaFormat) (*models.InferredSchema, error)
+	ListEndpointPatterns(ctx context.Context, host string) ([]*models.EndpointPattern, error)
+	ListEndpointUsage(ctx context.Context, host, method, pathPrefix string, limit int) ([]*models.EndpointUsage, error)
+}
+
+// Server is the MCP server for Prism
 type Server struct {
-	db        *storage.DB
+	db        DBStore
 	mcpServer *server.MCPServer
 }
 
@@ -21,7 +37,7 @@ func NewServer(db *storage.DB) *Server {
 
 	// Create MCP server
 	mcpServer := server.NewMCPServer(
-		"ai-proxy",
+		"prism",
 		"1.0.0",
 		server.WithToolCapabilities(true),
 	)
@@ -61,6 +77,24 @@ func (s *Server) registerTools(mcpServer *server.MCPServer) {
 		),
 	), s.handleListCaptures)
 
+	// list_endpoints
+	mcpServer.AddTool(mcp.NewTool("list_endpoints",
+		mcp.WithDescription("List observed endpoint method/path pairs with traffic counts. Useful for scoping to a subset of the API."),
+		mcp.WithString("host",
+			mcp.Required(),
+			mcp.Description("Target hostname (e.g., 'api.example.com')"),
+		),
+		mcp.WithString("method",
+			mcp.Description("Filter by HTTP method (GET, POST, etc.)"),
+		),
+		mcp.WithString("path_prefix",
+			mcp.Description("Filter by path prefix (e.g., '/v3/users')"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum results to return (default: 100, max: 500)"),
+		),
+	), s.handleListEndpoints)
+
 	// get_request
 	mcpServer.AddTool(mcp.NewTool("get_request",
 		mcp.WithDescription("Get complete details of a captured HTTP request including headers and body."),
@@ -85,23 +119,62 @@ func (s *Server) registerTools(mcpServer *server.MCPServer) {
 		),
 	), s.handleGetResponse)
 
-	// search_traffic
-	mcpServer.AddTool(mcp.NewTool("search_traffic",
-		mcp.WithDescription("Full-text search across captured HTTP traffic including URLs, headers, and bodies."),
-		mcp.WithString("query",
-			mcp.Required(),
-			mcp.Description("Search query. Supports SQLite FTS5 syntax: AND, OR, NOT, quotes for phrases"),
-		),
+	// get_examples
+	mcpServer.AddTool(mcp.NewTool("get_examples",
+		mcp.WithDescription("Get example request/response pairs for a method/path pattern."),
 		mcp.WithString("host",
-			mcp.Description("Limit search to specific host"),
+			mcp.Required(),
+			mcp.Description("Target hostname (e.g., 'api.example.com')"),
 		),
 		mcp.WithString("method",
-			mcp.Description("Limit search to specific HTTP method"),
+			mcp.Description("Filter by HTTP method (GET, POST, etc.)"),
+		),
+		mcp.WithString("path",
+			mcp.Description("Path or wildcard pattern (supports '*', e.g., '/v3/users/*')"),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum results to return (default: 20, max: 100)"),
+			mcp.Description("Maximum examples to return (default: 3, max: 10)"),
 		),
-	), s.handleSearchTraffic)
+		mcp.WithBoolean("include_body",
+			mcp.Description("Whether to include request/response bodies (default: true)"),
+		),
+		mcp.WithBoolean("include_headers",
+			mcp.Description("Whether to include request/response headers (default: false)"),
+		),
+		mcp.WithNumber("max_body_size",
+			mcp.Description("Maximum body size to include in bytes (default: 2000, max: 10000)"),
+		),
+	), s.handleGetExamples)
+
+	// get_slice
+	mcpServer.AddTool(mcp.NewTool("get_slice",
+		mcp.WithDescription("Get a scoped slice of the API: endpoints + example request/response pairs for each endpoint."),
+		mcp.WithString("host",
+			mcp.Required(),
+			mcp.Description("Target hostname (e.g., 'api.example.com')"),
+		),
+		mcp.WithString("method",
+			mcp.Description("Filter by HTTP method (GET, POST, etc.)"),
+		),
+		mcp.WithString("path_prefix",
+			mcp.Description("Filter endpoints by path prefix (e.g., '/v3/users')"),
+		),
+		mcp.WithNumber("limit_endpoints",
+			mcp.Description("Maximum endpoints to include (default: 25, max: 100)"),
+		),
+		mcp.WithNumber("examples_per_endpoint",
+			mcp.Description("Examples per endpoint (default: 2, max: 5)"),
+		),
+		mcp.WithBoolean("include_body",
+			mcp.Description("Whether to include request/response bodies (default: true)"),
+		),
+		mcp.WithBoolean("include_headers",
+			mcp.Description("Whether to include request/response headers (default: false)"),
+		),
+		mcp.WithNumber("max_body_size",
+			mcp.Description("Maximum body size to include in bytes (default: 2000, max: 10000)"),
+		),
+	), s.handleGetSlice)
 
 	// get_websocket_messages
 	mcpServer.AddTool(mcp.NewTool("get_websocket_messages",
@@ -139,38 +212,6 @@ func (s *Server) registerTools(mcpServer *server.MCPServer) {
 		),
 	), s.handleGetSchema)
 
-	// list_schemas
-	mcpServer.AddTool(mcp.NewTool("list_schemas",
-		mcp.WithDescription("List all inferred schemas organized by host and endpoint."),
-		mcp.WithString("host",
-			mcp.Description("Filter to specific host"),
-		),
-	), s.handleListSchemas)
-
-	// get_statistics
-	mcpServer.AddTool(mcp.NewTool("get_statistics",
-		mcp.WithDescription("Get traffic statistics and summary metrics."),
-		mcp.WithString("period",
-			mcp.Description("Time period: 'hour', 'day', 'week', 'month', 'all' (default: day)"),
-		),
-		mcp.WithString("group_by",
-			mcp.Description("Group statistics by: 'host', 'method', 'status', 'content_type', 'path'"),
-		),
-		mcp.WithString("host",
-			mcp.Description("Filter to specific host"),
-		),
-	), s.handleGetStatistics)
-
-	// analyze_auth
-	mcpServer.AddTool(mcp.NewTool("analyze_auth",
-		mcp.WithDescription("Analyze authentication patterns in captured traffic. Detects Bearer tokens, API keys, Basic auth, cookies, and more."),
-		mcp.WithString("host",
-			mcp.Description("Analyze auth for specific host"),
-		),
-		mcp.WithBoolean("include_tokens",
-			mcp.Description("Include actual token values (sensitive!). Default: false"),
-		),
-	), s.handleAnalyzeAuth)
 }
 
 // Run starts the MCP server on stdio

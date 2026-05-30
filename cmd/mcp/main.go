@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"ai-proxy/internal/mcp"
-	"ai-proxy/internal/storage"
+	"prism/internal/mcp"
+	"prism/internal/storage"
 )
 
 func main() {

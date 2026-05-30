@@ -63,6 +63,11 @@ export async function deleteCapture(id: string): Promise<void> {
   await fetch(`${API_BASE}/captures/${id}`, { method: 'DELETE' })
 }
 
+export async function clearCaptures(host?: string): Promise<{ deleted: number }> {
+  const params = host ? `?host=${encodeURIComponent(host)}` : ''
+  return fetchJSON(`${API_BASE}/captures${params}`, { method: 'DELETE' })
+}
+
 export async function searchTraffic(query: string, options?: { host?: string; limit?: number }): Promise<SearchResult> {
   const params = new URLSearchParams({ q: query })
   if (options?.host) params.set('host', options.host)
@@ -201,28 +206,6 @@ export async function validateRequest(id: string): Promise<ValidationResult> {
   return fetchJSON(`${API_BASE}/validation/request/${encodeURIComponent(id)}`)
 }
 
-// SSE for real-time updates
-export function subscribeToTraffic(onCapture: (capture: CaptureListItem) => void): () => void {
-  const eventSource = new EventSource(`${API_BASE}/events/traffic`)
-
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      if (data.type === 'capture') {
-        onCapture(data.data)
-      }
-    } catch (e) {
-      console.error('Failed to parse SSE event:', e)
-    }
-  }
-
-  eventSource.onerror = () => {
-    console.error('SSE connection error')
-  }
-
-  return () => eventSource.close()
-}
-
 // Validation event from SSE
 export interface ValidationEvent {
   request_id: string
@@ -233,6 +216,70 @@ export interface ValidationEvent {
   matched_path?: string
   errors?: ValidationError[]
   timestamp: string
+}
+
+// Schema versioning and AI fix
+export interface SchemaVersion {
+  id: number
+  host: string
+  format: string
+  version: number
+  content: string
+  change_reason: string
+  validation_errors_fixed: string
+  created_at: string
+  is_active: boolean
+}
+
+export interface SchemaFixResponse {
+  version: number
+  fixed_schema: string
+  changes: string[]
+  reasoning: string
+}
+
+export interface PreviewResult {
+  version: number
+  results: {
+    request_id: string
+    method: string
+    path: string
+    valid: boolean
+    matched_path?: string
+    errors?: ValidationError[]
+  }[]
+  valid_count: number
+  invalid_count: number
+}
+
+export async function listSchemaVersions(host: string, format: string = 'openapi'): Promise<{ versions: SchemaVersion[] }> {
+  return fetchJSON(`${API_BASE}/schemas/${encodeURIComponent(host)}/versions?format=${format}`)
+}
+
+export async function requestSchemaFix(host: string, validationErrors: string[], sampleData?: string): Promise<SchemaFixResponse> {
+  return fetchJSON(`${API_BASE}/schemas/${encodeURIComponent(host)}/fix`, {
+    method: 'POST',
+    body: JSON.stringify({
+      validation_errors: validationErrors,
+      sample_data: sampleData,
+    }),
+  })
+}
+
+export async function previewSchemaFix(host: string, version: number, requestIds: string[]): Promise<PreviewResult> {
+  return fetchJSON(`${API_BASE}/schemas/${encodeURIComponent(host)}/preview-fix`, {
+    method: 'POST',
+    body: JSON.stringify({
+      version,
+      request_ids: requestIds,
+    }),
+  })
+}
+
+export async function activateSchemaVersion(host: string, version: number): Promise<{ message: string }> {
+  return fetchJSON(`${API_BASE}/schemas/${encodeURIComponent(host)}/versions/${version}/activate`, {
+    method: 'POST',
+  })
 }
 
 // SSE for real-time validation monitoring

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // SaveResponse stores an HTTP response

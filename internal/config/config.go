@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // Load reads configuration from file and environment

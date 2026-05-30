@@ -7,8 +7,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"ai-proxy/internal/storage"
-	"ai-proxy/pkg/models"
+	"prism/internal/storage"
+	"prism/pkg/models"
 )
 
 // handleListCaptures handles the list_captures tool
@@ -31,6 +31,10 @@ func (s *Server) handleListCaptures(ctx context.Context, request mcp.CallToolReq
 	}
 	if path := request.GetString("path", ""); path != "" {
 		filter.Path = path
+		// When filtering by specific path, default to smaller limit (10 instead of 50)
+		if filter.Limit == 50 {
+			filter.Limit = 10
+		}
 	}
 	if contentType := request.GetString("content_type", ""); contentType != "" {
 		filter.ContentType = contentType
@@ -58,6 +62,37 @@ func (s *Server) handleListCaptures(ctx context.Context, request mcp.CallToolReq
 	}
 
 	return jsonResult(result)
+}
+
+// handleListEndpoints handles the list_endpoints tool
+func (s *Server) handleListEndpoints(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	host, err := request.RequireString("host")
+	if err != nil {
+		return mcp.NewToolResultError("Missing required parameter: host"), nil
+	}
+
+	method := request.GetString("method", "")
+	pathPrefix := request.GetString("path_prefix", "")
+	limit := int(request.GetFloat("limit", 0))
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	endpoints, err := s.db.ListEndpointUsage(ctx, host, method, pathPrefix, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list endpoints: %v", err)), nil
+	}
+
+	return jsonResult(map[string]interface{}{
+		"host":        host,
+		"method":      method,
+		"path_prefix": pathPrefix,
+		"limit":       limit,
+		"endpoints":   endpoints,
+	})
 }
 
 // handleGetRequest handles the get_request tool
@@ -101,6 +136,159 @@ func (s *Server) handleGetRequest(ctx context.Context, request mcp.CallToolReque
 	return jsonResult(result)
 }
 
+// handleGetExamples handles the get_examples tool
+func (s *Server) handleGetExamples(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	host, err := request.RequireString("host")
+	if err != nil {
+		return mcp.NewToolResultError("Missing required parameter: host"), nil
+	}
+
+	method := request.GetString("method", "")
+	path := request.GetString("path", "")
+	limit := int(request.GetFloat("limit", 0))
+	if limit <= 0 {
+		limit = 3
+	}
+	if limit > 10 {
+		limit = 10
+	}
+
+	includeBody := request.GetBool("include_body", true)
+	includeHeaders := request.GetBool("include_headers", false)
+	maxBodySize := int(request.GetFloat("max_body_size", 0))
+	if maxBodySize <= 0 {
+		maxBodySize = 2000
+	}
+	if maxBodySize > 10000 {
+		maxBodySize = 10000
+	}
+
+	filter := &storage.RequestFilter{
+		Host:  host,
+		Page:  1,
+		Limit: limit,
+		Sort:  "captured_at",
+		Order: "desc",
+	}
+	if method != "" {
+		filter.Method = method
+	}
+	if path != "" {
+		filter.Path = path
+	}
+
+	items, total, err := s.db.ListRequests(ctx, filter)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list examples: %v", err)), nil
+	}
+
+	var examples []map[string]interface{}
+	for _, item := range items {
+		capture, err := s.db.GetCapture(ctx, item.ID)
+		if err != nil || capture == nil || capture.Request == nil {
+			continue
+		}
+		examples = append(examples, buildExample(capture, includeBody, includeHeaders, maxBodySize))
+	}
+
+	return jsonResult(map[string]interface{}{
+		"host":          host,
+		"method":        method,
+		"path":          path,
+		"limit":         limit,
+		"total":         total,
+		"examples":      examples,
+		"max_body_size": maxBodySize,
+	})
+}
+
+// handleGetSlice handles the get_slice tool
+func (s *Server) handleGetSlice(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	host, err := request.RequireString("host")
+	if err != nil {
+		return mcp.NewToolResultError("Missing required parameter: host"), nil
+	}
+
+	method := request.GetString("method", "")
+	pathPrefix := request.GetString("path_prefix", "")
+
+	limitEndpoints := int(request.GetFloat("limit_endpoints", 0))
+	if limitEndpoints <= 0 {
+		limitEndpoints = 25
+	}
+	if limitEndpoints > 100 {
+		limitEndpoints = 100
+	}
+
+	examplesPerEndpoint := int(request.GetFloat("examples_per_endpoint", 0))
+	if examplesPerEndpoint <= 0 {
+		examplesPerEndpoint = 2
+	}
+	if examplesPerEndpoint > 5 {
+		examplesPerEndpoint = 5
+	}
+
+	includeBody := request.GetBool("include_body", true)
+	includeHeaders := request.GetBool("include_headers", false)
+	maxBodySize := int(request.GetFloat("max_body_size", 0))
+	if maxBodySize <= 0 {
+		maxBodySize = 2000
+	}
+	if maxBodySize > 10000 {
+		maxBodySize = 10000
+	}
+
+	endpoints, err := s.db.ListEndpointUsage(ctx, host, method, pathPrefix, limitEndpoints)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list endpoints: %v", err)), nil
+	}
+
+	var endpointItems []map[string]interface{}
+	for _, endpoint := range endpoints {
+		filter := &storage.RequestFilter{
+			Host:   host,
+			Method: endpoint.Method,
+			Path:   endpoint.Path,
+			Page:   1,
+			Limit:  examplesPerEndpoint,
+			Sort:   "captured_at",
+			Order:  "desc",
+		}
+
+		items, _, err := s.db.ListRequests(ctx, filter)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list examples: %v", err)), nil
+		}
+
+		var examples []map[string]interface{}
+		for _, item := range items {
+			capture, err := s.db.GetCapture(ctx, item.ID)
+			if err != nil || capture == nil || capture.Request == nil {
+				continue
+			}
+			examples = append(examples, buildExample(capture, includeBody, includeHeaders, maxBodySize))
+		}
+
+		endpointItems = append(endpointItems, map[string]interface{}{
+			"method":       endpoint.Method,
+			"path":         endpoint.Path,
+			"sample_count": endpoint.SampleCount,
+			"last_seen":    endpoint.LastSeen,
+			"examples":     examples,
+		})
+	}
+
+	return jsonResult(map[string]interface{}{
+		"host":                  host,
+		"method":                method,
+		"path_prefix":           pathPrefix,
+		"limit_endpoints":       limitEndpoints,
+		"examples_per_endpoint": examplesPerEndpoint,
+		"max_body_size":         maxBodySize,
+		"endpoints":             endpointItems,
+	})
+}
+
 // handleGetResponse handles the get_response tool
 func (s *Server) handleGetResponse(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	requestID, err := request.RequireString("request_id")
@@ -131,44 +319,6 @@ func (s *Server) handleGetResponse(ctx context.Context, request mcp.CallToolRequ
 
 	if includeBody && len(resp.Body) > 0 {
 		result["body"] = string(resp.Body)
-	}
-
-	return jsonResult(result)
-}
-
-// handleSearchTraffic handles the search_traffic tool
-func (s *Server) handleSearchTraffic(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	query, err := request.RequireString("query")
-	if err != nil {
-		return mcp.NewToolResultError("Missing required parameter: query"), nil
-	}
-
-	opts := &storage.SearchOptions{
-		Limit: 20,
-	}
-
-	if host := request.GetString("host", ""); host != "" {
-		opts.Host = host
-	}
-	if method := request.GetString("method", ""); method != "" {
-		opts.Method = method
-	}
-	if limit := request.GetFloat("limit", 0); limit > 0 {
-		opts.Limit = int(limit)
-		if opts.Limit > 100 {
-			opts.Limit = 100
-		}
-	}
-
-	results, total, err := s.db.SearchRequests(ctx, query, opts)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
-	}
-
-	result := map[string]interface{}{
-		"query":   query,
-		"results": results,
-		"total":   total,
 	}
 
 	return jsonResult(result)
@@ -275,83 +425,63 @@ func (s *Server) handleGetSchema(ctx context.Context, request mcp.CallToolReques
 	return jsonResult(result)
 }
 
-// handleListSchemas handles the list_schemas tool
-func (s *Server) handleListSchemas(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	host := request.GetString("host", "")
-
-	schemas, err := s.db.ListSchemas(ctx, host)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list schemas: %v", err)), nil
+func truncateBody(body []byte, maxSize int) (string, bool) {
+	if maxSize <= 0 || len(body) <= maxSize {
+		return string(body), false
 	}
-
-	return jsonResult(map[string]interface{}{
-		"schemas": schemas,
-	})
+	return string(body[:maxSize]) + "...", true
 }
 
-// handleGetStatistics handles the get_statistics tool
-func (s *Server) handleGetStatistics(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	period := request.GetString("period", "day")
-
-	stats, err := s.db.GetStats(ctx, period)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get statistics: %v", err)), nil
+func buildExample(capture *models.Capture, includeBody, includeHeaders bool, maxBodySize int) map[string]interface{} {
+	req := capture.Request
+	reqMap := map[string]interface{}{
+		"id":           req.UUID,
+		"method":       req.Method,
+		"url":          req.URL,
+		"path":         req.Path,
+		"query_string": req.QueryString,
+		"content_type": req.ContentType,
+		"body_size":    req.BodySize,
+		"captured_at":  req.CapturedAt,
+	}
+	if includeHeaders {
+		reqMap["headers"] = req.Headers
+	}
+	if includeBody && len(req.Body) > 0 {
+		body, truncated := truncateBody(req.Body, maxBodySize)
+		reqMap["body"] = body
+		if truncated {
+			reqMap["body_truncated"] = true
+		}
 	}
 
-	return jsonResult(stats)
-}
-
-// handleAnalyzeAuth handles the analyze_auth tool
-func (s *Server) handleAnalyzeAuth(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	host := request.GetString("host", "")
-	includeTokens := request.GetBool("include_tokens", false)
-
-	// Get requests with auth headers
-	filter := &storage.RequestFilter{
-		Host:  host,
-		Limit: 1000,
+	var respMap map[string]interface{}
+	if capture.Response != nil {
+		resp := capture.Response
+		respMap = map[string]interface{}{
+			"status_code":  resp.StatusCode,
+			"status_text":  resp.StatusText,
+			"content_type": resp.ContentType,
+			"body_size":    resp.BodySize,
+			"latency_ms":   resp.LatencyMs,
+			"captured_at":  resp.CapturedAt,
+		}
+		if includeHeaders {
+			respMap["headers"] = resp.Headers
+		}
+		if includeBody && len(resp.Body) > 0 {
+			body, truncated := truncateBody(resp.Body, maxBodySize)
+			respMap["body"] = body
+			if truncated {
+				respMap["body_truncated"] = true
+			}
+		}
 	}
 
-	requests, _, err := s.db.ListRequests(ctx, filter)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to analyze auth: %v", err)), nil
+	return map[string]interface{}{
+		"request":  reqMap,
+		"response": respMap,
 	}
-
-	// Analyze auth patterns
-	authSchemes := analyzeAuthPatterns(s.db, requests, includeTokens)
-
-	result := &models.AuthAnalysis{
-		Host:        host,
-		AuthSchemes: authSchemes,
-	}
-
-	return jsonResult(result)
-}
-
-// analyzeAuthPatterns detects authentication patterns from requests
-func analyzeAuthPatterns(db *storage.DB, requests []*models.CaptureListItem, includeTokens bool) []*models.AuthScheme {
-	// Note: Full auth analysis would require reading full request headers
-	// For now, return a placeholder indicating analysis is available
-	_ = requests
-	_ = includeTokens
-
-	var schemes []*models.AuthScheme
-
-	// If no schemes detected, indicate that
-	schemes = append(schemes, &models.AuthScheme{
-		Type: "none",
-		Name: "Auth analysis requires examining request headers. Use get_request to inspect individual requests.",
-	})
-
-	return schemes
-}
-
-// maskToken masks a token for safe display
-func maskToken(token string) string {
-	if len(token) <= 8 {
-		return "****"
-	}
-	return token[:4] + "..." + token[len(token)-4:]
 }
 
 // jsonResult creates a JSON tool result

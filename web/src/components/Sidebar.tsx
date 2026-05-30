@@ -140,7 +140,7 @@ export default function Sidebar({ captures, selectedId, onSelect, enabledHosts, 
   }
 
   return (
-    <aside className="w-64 border-r border-proxy-border bg-proxy-sidebar overflow-y-auto">
+    <aside className="h-full w-full bg-proxy-sidebar overflow-y-auto">
       <div className="p-2 text-xs font-semibold text-proxy-text-dim uppercase tracking-wide">
         Hosts
       </div>

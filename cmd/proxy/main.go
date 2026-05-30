@@ -8,14 +8,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
-	"ai-proxy/internal/api"
-	"ai-proxy/internal/ca"
-	"ai-proxy/internal/config"
-	"ai-proxy/internal/proxy"
-	"ai-proxy/internal/storage"
+	"prism/internal/api"
+	"prism/internal/ca"
+	"prism/internal/config"
+	"prism/internal/proxy"
+	"prism/internal/storage"
+	"prism/web"
 )
 
 func main() {
@@ -38,7 +40,7 @@ func main() {
 	}
 	defer logger.Sync()
 
-	logger.Info("Starting AI Proxy",
+	logger.Info("Starting Prism",
 		zap.String("proxy_addr", cfg.Proxy.Listen),
 		zap.String("api_addr", cfg.API.Listen),
 	)
@@ -67,8 +69,13 @@ func main() {
 	// Create proxy server
 	proxyServer := proxy.NewServer(db, caManager, logger, cfg)
 
-	// Create API server
-	apiServer := api.NewServer(db, caManager, logger, cfg)
+	// Start background pruner for data cleanup
+	// Keep 100 records per (host, method, path) for enabled hosts
+	// Keep 1000 most recent records for non-enabled hosts
+	proxyServer.StartPruner(time.Minute, 100, 1000)
+
+	// Create API server with embedded web UI
+	apiServer := api.NewServer(db, caManager, logger, cfg, web.DistFS())
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

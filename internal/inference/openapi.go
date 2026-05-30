@@ -131,10 +131,10 @@ func (g *OpenAPIGenerator) Generate(host string) (*OpenAPI, error) {
 		OpenAPI: "3.0.3",
 		Info: OpenAPIInfo{
 			Title:       fmt.Sprintf("%s API", host),
-			Description: fmt.Sprintf("API specification for %s, auto-generated from captured traffic by ai-proxy.", host),
+			Description: fmt.Sprintf("API specification for %s, auto-generated from captured traffic by Prism.", host),
 			Version:     "1.0.0",
 			Contact: &OpenAPIContact{
-				Name: "AI Proxy",
+				Name: "Prism",
 			},
 			License: &OpenAPILicense{
 				Name: "MIT",

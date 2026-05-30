@@ -1,7 +1,232 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { getEnabledHosts, listSchemas, subscribeToValidation, type ValidationEvent, type ValidationError } from '../api/client'
-import { CheckCircle, XCircle, AlertTriangle, Globe, Radio, ChevronRight, ChevronDown, Trash2 } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { getEnabledHosts, listSchemas, subscribeToValidation, requestSchemaFix, previewSchemaFix, activateSchemaVersion, type ValidationEvent, type ValidationError, type SchemaFixResponse, type PreviewResult } from '../api/client'
+import { CheckCircle, XCircle, AlertTriangle, Globe, Radio, ChevronRight, ChevronDown, Trash2, Wand2, X, Loader2, Check } from 'lucide-react'
+
+// AI Fix Modal Component
+interface AIFixModalProps {
+  host: string
+  errors: ValidationError[]
+  requestIds: string[]
+  onClose: () => void
+}
+
+function AIFixModal({ host, errors, requestIds, onClose }: AIFixModalProps) {
+  const queryClient = useQueryClient()
+  const [step, setStep] = useState<'requesting' | 'preview' | 'done'>('requesting')
+  const [fixResponse, setFixResponse] = useState<SchemaFixResponse | null>(null)
+  const [previewResult, setPreviewResult] = useState<PreviewResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Request AI fix
+  const fixMutation = useMutation({
+    mutationFn: () => {
+      const errorMessages = errors.map(e => `${e.location}: ${e.message}`)
+      return requestSchemaFix(host, errorMessages)
+    },
+    onSuccess: (data) => {
+      setFixResponse(data)
+      // Auto-preview with the failing requests
+      previewMutation.mutate({ version: data.version, requestIds: requestIds.slice(0, 10) })
+    },
+    onError: (err: Error) => {
+      setError(err.message)
+    }
+  })
+
+  // Preview fix
+  const previewMutation = useMutation({
+    mutationFn: ({ version, requestIds }: { version: number; requestIds: string[] }) =>
+      previewSchemaFix(host, version, requestIds),
+    onSuccess: (data) => {
+      setPreviewResult(data)
+      setStep('preview')
+    },
+    onError: (err: Error) => {
+      setError(err.message)
+    }
+  })
+
+  // Activate fix
+  const activateMutation = useMutation({
+    mutationFn: (version: number) => activateSchemaVersion(host, version),
+    onSuccess: () => {
+      setStep('done')
+      // Invalidate schemas to refresh
+      queryClient.invalidateQueries({ queryKey: ['schemas'] })
+    },
+    onError: (err: Error) => {
+      setError(err.message)
+    }
+  })
+
+  // Auto-start the fix request
+  useEffect(() => {
+    fixMutation.mutate()
+  }, [])
+
+  const isLoading = fixMutation.isPending || previewMutation.isPending || activateMutation.isPending
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+      <div className="bg-[#1a1a2e] border border-proxy-border rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-proxy-border">
+          <h3 className="text-lg font-medium flex items-center gap-2">
+            <Wand2 size={18} className="text-purple-400" />
+            AI Schema Fix
+          </h3>
+          <button onClick={onClose} className="text-proxy-text-dim hover:text-proxy-text">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-auto p-4">
+          {error && (
+            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm">
+              {error}
+            </div>
+          )}
+
+          {step === 'requesting' && (
+            <div className="text-center py-8">
+              <Loader2 size={32} className="mx-auto mb-4 animate-spin text-purple-400" />
+              <p>Analyzing validation errors and generating fix...</p>
+              <p className="text-sm text-proxy-text-dim mt-2">
+                {errors.length} error{errors.length > 1 ? 's' : ''} to fix
+              </p>
+            </div>
+          )}
+
+          {step === 'preview' && fixResponse && previewResult && (
+            <div className="space-y-4">
+              {/* Changes */}
+              <div>
+                <h4 className="font-medium mb-2">Proposed Changes</h4>
+                <ul className="space-y-1">
+                  {fixResponse.changes.map((change, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      <span className="text-emerald-400 mt-0.5">+</span>
+                      <span>{change}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Reasoning */}
+              <div>
+                <h4 className="font-medium mb-2">Reasoning</h4>
+                <p className="text-sm text-proxy-text-dim">{fixResponse.reasoning}</p>
+              </div>
+
+              {/* Preview results */}
+              <div>
+                <h4 className="font-medium mb-2">Validation Preview</h4>
+                <div className="grid grid-cols-2 gap-4 mb-3">
+                  <div className="p-3 bg-emerald-500/10 rounded border border-emerald-500/30 text-center">
+                    <div className="text-xl font-bold text-emerald-400">{previewResult.valid_count}</div>
+                    <div className="text-xs text-proxy-text-dim">Now Valid</div>
+                  </div>
+                  <div className="p-3 bg-red-500/10 rounded border border-red-500/30 text-center">
+                    <div className="text-xl font-bold text-red-400">{previewResult.invalid_count}</div>
+                    <div className="text-xs text-proxy-text-dim">Still Invalid</div>
+                  </div>
+                </div>
+
+                {previewResult.invalid_count > 0 && (
+                  <div className="text-sm text-yellow-400 mb-3">
+                    <AlertTriangle size={14} className="inline mr-1" />
+                    Some requests are still invalid. You may need additional fixes.
+                  </div>
+                )}
+
+                {/* Individual results */}
+                <div className="max-h-48 overflow-auto border border-proxy-border rounded">
+                  <table className="w-full text-xs">
+                    <thead className="bg-proxy-sidebar sticky top-0">
+                      <tr>
+                        <th className="px-2 py-1 text-left">Status</th>
+                        <th className="px-2 py-1 text-left">Method</th>
+                        <th className="px-2 py-1 text-left">Path</th>
+                        <th className="px-2 py-1 text-left">Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewResult.results.map((result, i) => (
+                        <tr key={i} className={result.valid ? 'bg-emerald-500/5' : 'bg-red-500/5'}>
+                          <td className="px-2 py-1">
+                            {result.valid ? (
+                              <CheckCircle size={12} className="text-emerald-400" />
+                            ) : (
+                              <XCircle size={12} className="text-red-400" />
+                            )}
+                          </td>
+                          <td className="px-2 py-1 font-mono">{result.method}</td>
+                          <td className="px-2 py-1 font-mono truncate max-w-32">{result.path}</td>
+                          <td className="px-2 py-1 text-red-400 truncate max-w-64">
+                            {result.errors && result.errors.length > 0
+                              ? result.errors.map(e => e.message).join('; ')
+                              : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 'done' && (
+            <div className="text-center py-8">
+              <Check size={32} className="mx-auto mb-4 text-emerald-400" />
+              <p className="text-lg font-medium">Schema Updated Successfully</p>
+              <p className="text-sm text-proxy-text-dim mt-2">
+                The fix has been applied. New requests will be validated against the updated schema.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-4 py-3 border-t border-proxy-border">
+          {step === 'preview' && fixResponse && (
+            <>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-sm text-proxy-text-dim hover:text-proxy-text"
+                disabled={isLoading}
+              >
+                Reject
+              </button>
+              <button
+                onClick={() => activateMutation.mutate(fixResponse.version)}
+                className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded flex items-center gap-2"
+                disabled={isLoading}
+              >
+                {activateMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Check size={14} />
+                )}
+                Accept & Apply
+              </button>
+            </>
+          )}
+          {step === 'done' && (
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm bg-proxy-accent hover:bg-proxy-accent/80 text-white rounded"
+            >
+              Close
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function ValidationPage() {
   const [selectedHost, setSelectedHost] = useState<string | null>(null)
@@ -9,6 +234,9 @@ export default function ValidationPage() {
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
   const [warning, setWarning] = useState<string | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+  const [methodFilter, setMethodFilter] = useState<string>('')
+  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [aiFixModal, setAiFixModal] = useState<{ errors: ValidationError[]; requestIds: string[] } | null>(null)
 
   // Fetch enabled hosts
   const { data: enabledHosts, isLoading: hostsLoading } = useQuery({
@@ -79,10 +307,68 @@ export default function ValidationPage() {
     setEvents([])
   }, [])
 
-  // Calculate stats
-  const validCount = events.filter(e => e.status === 'valid').length
-  const invalidCount = events.filter(e => e.status === 'invalid').length
-  const unmatchedCount = events.filter(e => e.status === 'unmatched').length
+  const openAiFix = useCallback((errors: ValidationError[], requestIds: string[]) => {
+    setAiFixModal({ errors, requestIds })
+  }, [])
+
+  // Filter events by method and status
+  const filteredEvents = events.filter(e => {
+    if (methodFilter && e.method !== methodFilter) return false
+    if (statusFilter && e.status !== statusFilter) return false
+    return true
+  })
+
+  // Calculate stats (from filtered events)
+  const validCount = filteredEvents.filter(e => e.status === 'valid').length
+  const invalidCount = filteredEvents.filter(e => e.status === 'invalid').length
+  const unmatchedCount = filteredEvents.filter(e => e.status === 'unmatched').length
+
+  // Get unique methods for filter dropdown
+  const availableMethods = [...new Set(events.map(e => e.method))].sort()
+
+  // Group events by method + matched_path + status + single error
+  // Each individual error becomes its own row, then identical errors are grouped
+  type GroupedEvent = ValidationEvent & { count: number; request_ids: string[]; singleError?: ValidationError }
+  const groupedEvents = filteredEvents.reduce<GroupedEvent[]>((acc, event) => {
+    // If event has multiple errors, create a separate row for each error
+    const errors = event.errors && event.errors.length > 0 ? event.errors : [undefined]
+
+    for (const singleError of errors) {
+      // Create a signature for grouping - use single error only
+      const errorSig = singleError ? `${singleError.location}:${singleError.message}` : ''
+      const signature = `${event.method}|${event.matched_path || event.path}|${event.status}|${errorSig}`
+
+      const existing = acc.find(g => {
+        const gErrorSig = g.singleError ? `${g.singleError.location}:${g.singleError.message}` : ''
+        const gSig = `${g.method}|${g.matched_path || g.path}|${g.status}|${gErrorSig}`
+        return gSig === signature
+      })
+
+      if (existing) {
+        existing.count++
+        if (!existing.request_ids.includes(event.request_id)) {
+          existing.request_ids.push(event.request_id)
+        }
+      } else {
+        acc.push({
+          ...event,
+          count: 1,
+          request_ids: [event.request_id],
+          singleError,
+          // Override errors array to only contain this single error (for display)
+          errors: singleError ? [singleError] : undefined
+        })
+      }
+    }
+    return acc
+  }, [])
+
+  // Sort by path (matched_path or path)
+  groupedEvents.sort((a, b) => {
+    const pathA = a.matched_path || a.path
+    const pathB = b.matched_path || b.path
+    return pathA.localeCompare(pathB)
+  })
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -194,13 +480,35 @@ export default function ValidationPage() {
                     </span>
                   )}
                 </div>
-                <button
-                  onClick={clearEvents}
-                  className="flex items-center gap-1 px-2 py-1 text-xs text-proxy-text-dim hover:text-proxy-text hover:bg-proxy-border rounded"
-                >
-                  <Trash2 size={12} />
-                  Clear
-                </button>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="px-2 py-1 text-xs bg-proxy-bg border border-proxy-border rounded text-proxy-text"
+                  >
+                    <option value="">All Status</option>
+                    <option value="invalid">Errors Only</option>
+                    <option value="valid">Valid Only</option>
+                    <option value="unmatched">Unmatched Only</option>
+                  </select>
+                  <select
+                    value={methodFilter}
+                    onChange={(e) => setMethodFilter(e.target.value)}
+                    className="px-2 py-1 text-xs bg-proxy-bg border border-proxy-border rounded text-proxy-text"
+                  >
+                    <option value="">All Methods</option>
+                    {availableMethods.map(method => (
+                      <option key={method} value={method}>{method}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={clearEvents}
+                    className="flex items-center gap-1 px-2 py-1 text-xs text-proxy-text-dim hover:text-proxy-text hover:bg-proxy-border rounded"
+                  >
+                    <Trash2 size={12} />
+                    Clear
+                  </button>
+                </div>
               </div>
 
               {warning && (
@@ -243,23 +551,30 @@ export default function ValidationPage() {
                   <thead className="bg-proxy-sidebar sticky top-0">
                     <tr className="text-left text-proxy-text-dim">
                       <th className="px-4 py-2 w-10">Status</th>
+                      <th className="px-4 py-2 w-16">Count</th>
                       <th className="px-4 py-2 w-20">Method</th>
-                      <th className="px-4 py-2">Path</th>
+                      <th className="px-4 py-2">Matched Route</th>
                       <th className="px-4 py-2 w-16">Code</th>
-                      <th className="px-4 py-2 w-48">Matched Route</th>
-                      <th className="px-4 py-2 w-24">Errors</th>
+                      <th className="px-4 py-2">Error</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-proxy-border">
-                    {events.map((event) => (
+                    {groupedEvents.map((event) => (
                       <>
                         <tr
-                          key={event.request_id}
+                          key={event.request_ids[0] + (event.singleError?.message || '')}
                           className={`hover:bg-proxy-border cursor-pointer ${getStatusBg(event.status)}`}
-                          onClick={() => event.errors && event.errors.length > 0 && toggleError(event.request_id)}
+                          onClick={() => event.singleError && toggleError(event.request_ids[0] + (event.singleError?.message || ''))}
                         >
                           <td className="px-4 py-2">
                             {getStatusIcon(event.status)}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                              event.count > 1 ? 'bg-proxy-accent text-white' : 'text-proxy-text-dim'
+                            }`}>
+                              {event.count}×
+                            </span>
                           </td>
                           <td className="px-4 py-2">
                             <span className={`font-mono ${
@@ -273,7 +588,7 @@ export default function ValidationPage() {
                             </span>
                           </td>
                           <td className="px-4 py-2 font-mono text-proxy-text-dim truncate max-w-md">
-                            {event.path}
+                            {event.matched_path || event.path}
                           </td>
                           <td className="px-4 py-2">
                             <span className={`font-mono ${
@@ -285,40 +600,53 @@ export default function ValidationPage() {
                               {event.status_code}
                             </span>
                           </td>
-                          <td className="px-4 py-2 font-mono text-xs text-proxy-text-dim">
-                            {event.matched_path || '-'}
-                          </td>
                           <td className="px-4 py-2">
-                            {event.errors && event.errors.length > 0 && (
+                            {event.singleError && (
                               <span className={`flex items-center gap-1 ${getStatusColor(event.status)}`}>
-                                {expandedErrors.has(event.request_id) ? (
-                                  <ChevronDown size={14} />
+                                {expandedErrors.has(event.request_ids[0] + (event.singleError?.message || '')) ? (
+                                  <ChevronDown size={14} className="flex-shrink-0" />
                                 ) : (
-                                  <ChevronRight size={14} />
+                                  <ChevronRight size={14} className="flex-shrink-0" />
                                 )}
-                                {event.errors.length} error{event.errors.length > 1 ? 's' : ''}
+                                <span className="truncate" title={`${event.singleError.location}: ${event.singleError.message}`}>
+                                  {event.singleError.location}: {event.singleError.message.length > 40
+                                    ? event.singleError.message.substring(0, 40) + '...'
+                                    : event.singleError.message}
+                                </span>
                               </span>
                             )}
                           </td>
                         </tr>
-                        {expandedErrors.has(event.request_id) && event.errors && (
-                          <tr key={`${event.request_id}-errors`}>
+                        {expandedErrors.has(event.request_ids[0] + (event.singleError?.message || '')) && event.singleError && (
+                          <tr key={`${event.request_ids[0]}-${event.singleError?.message || ''}-errors`}>
                             <td colSpan={6} className={`px-4 py-3 ${
                               event.status === 'invalid' ? 'bg-red-500/10' : 'bg-yellow-500/10'
                             }`}>
-                              <div className="space-y-2">
-                                {event.errors.map((err: ValidationError, idx: number) => (
-                                  <div key={idx} className="flex items-start gap-3 text-xs">
+                              <div className="flex items-start justify-between">
+                                <div className="space-y-2 flex-1">
+                                  <div className="flex items-start gap-3 text-xs">
                                     <span className={`px-2 py-0.5 rounded ${
                                       event.status === 'invalid'
                                         ? 'bg-red-500/20 text-red-400'
                                         : 'bg-yellow-500/20 text-yellow-400'
                                     }`}>
-                                      {err.location}
+                                      {event.singleError.location}
                                     </span>
-                                    <span className="text-proxy-text-dim">{err.message}</span>
+                                    <span className="text-proxy-text-dim break-all">{event.singleError.message}</span>
                                   </div>
-                                ))}
+                                </div>
+                                {event.status === 'invalid' && event.singleError && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openAiFix([event.singleError!], event.request_ids)
+                                    }}
+                                    className="ml-4 flex items-center gap-1 px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded"
+                                  >
+                                    <Wand2 size={12} />
+                                    AI Fix
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -332,6 +660,16 @@ export default function ValidationPage() {
           </>
         )}
       </div>
+
+      {/* AI Fix Modal */}
+      {aiFixModal && selectedHost && (
+        <AIFixModal
+          host={selectedHost}
+          errors={aiFixModal.errors}
+          requestIds={aiFixModal.requestIds}
+          onClose={() => setAiFixModal(null)}
+        />
+      )}
     </div>
   )
 }

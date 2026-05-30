@@ -1,8 +1,6 @@
-import { Search, List, FolderTree, Trash2, Download } from 'lucide-react'
+import { Search, Trash2, Download } from 'lucide-react'
 
 interface TrafficHeaderProps {
-  viewMode: 'list' | 'tree'
-  onViewModeChange: (mode: 'list' | 'tree') => void
   filters: {
     host: string
     method: string
@@ -12,36 +10,20 @@ interface TrafficHeaderProps {
   onFiltersChange: (filters: TrafficHeaderProps['filters']) => void
   totalCaptures: number
   allCaptures?: number
+  onExport?: () => void
+  onClear?: () => void
 }
 
 export default function TrafficHeader({
-  viewMode,
-  onViewModeChange,
   filters,
   onFiltersChange,
   totalCaptures,
   allCaptures,
+  onExport,
+  onClear,
 }: TrafficHeaderProps) {
   return (
     <header className="h-10 flex items-center gap-4 px-4 border-b border-proxy-border bg-proxy-bg">
-      {/* View mode toggle */}
-      <div className="flex items-center border border-proxy-border rounded">
-        <button
-          className={`p-1.5 ${viewMode === 'list' ? 'bg-proxy-accent' : 'hover:bg-proxy-border'}`}
-          onClick={() => onViewModeChange('list')}
-          title="List view"
-        >
-          <List size={16} />
-        </button>
-        <button
-          className={`p-1.5 ${viewMode === 'tree' ? 'bg-proxy-accent' : 'hover:bg-proxy-border'}`}
-          onClick={() => onViewModeChange('tree')}
-          title="Tree view"
-        >
-          <FolderTree size={16} />
-        </button>
-      </div>
-
       {/* Search */}
       <div className="flex-1 max-w-md relative">
         <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-proxy-text-dim" />
@@ -94,13 +76,15 @@ export default function TrafficHeader({
       <div className="flex items-center gap-1">
         <button
           className="p-1.5 hover:bg-proxy-border rounded"
-          title="Export captures"
+          title="Export captures as JSON"
+          onClick={onExport}
         >
           <Download size={16} />
         </button>
         <button
           className="p-1.5 hover:bg-proxy-border rounded text-proxy-error"
           title="Clear all captures"
+          onClick={onClear}
         >
           <Trash2 size={16} />
         </button>

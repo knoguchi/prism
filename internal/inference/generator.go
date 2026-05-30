@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // Generator provides a unified interface for schema generation

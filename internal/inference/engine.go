@@ -11,7 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"ai-proxy/pkg/models"
+	"prism/pkg/models"
 )
 
 // Engine coordinates schema inference from captured traffic

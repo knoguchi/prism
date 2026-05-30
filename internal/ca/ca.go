@@ -124,9 +124,9 @@ func (m *Manager) generateCA(certPath, keyPath string) error {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization:       []string{"AI Proxy CA"},
+			Organization:       []string{"Prism CA"},
 			OrganizationalUnit: []string{"Development"},
-			CommonName:         "AI Proxy Root CA",
+			CommonName:         "Prism Root CA",
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(10, 0, 0), // 10 years
@@ -233,7 +233,7 @@ func (m *Manager) generateHostCert(host string) (*tls.Certificate, error) {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"AI Proxy"},
+			Organization: []string{"Prism"},
 			CommonName:   hostname,
 		},
 		NotBefore:   time.Now(),
